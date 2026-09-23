@@ -7,7 +7,6 @@ public class PlayerMovement : MonoBehaviour
     public float moveSpeed = 4500f;
     public float maxSpeed = 20f;
     public float counterMovement = 0.175f;
-    private float threshold = 0.01f;
     public float maxSlopeAngle = 35f;
 
     [Header("Crouch & Slide")]
@@ -16,19 +15,34 @@ public class PlayerMovement : MonoBehaviour
     private Vector3 playerScale;
     private Vector3 crouchScale = new Vector3(1f, 0.5f, 1f);
 
+    [Header("Slope Slide")]
+    public float slopeSlideForce = 2500f;
+
     [Header("Jumping & Gravity")]
     public float jumpForce = 550f;
-    public float extraGravity = 2500f;
+    public float normalGravity = 1200f;
     public LayerMask whatIsGround;
     private bool readyToJump = true;
-    private float jumpCooldown = 0.25f;
+    private float jumpCooldown = 0.2f;
 
-    // References & State
+    [Header("Karlson Wallrun & Wall Jump")]
+    public LayerMask whatIsWall;
+    public float wallCheckDistance = 1.3f;
+    public float wallRunGravity = 150f;
+    public float wallJumpSideForce = 22f;
+    public float wallJumpUpForce = 13f;
+    public float wallJumpForwardForce = 12f;
+
     private Rigidbody rb;
     private float xInput, yInput;
-    private bool jumping, crouching;
     private bool isGrounded;
+    private bool isWallRunning;
+    private RaycastHit wallHitLeft;
+    private RaycastHit wallHitRight;
+    private bool wallLeft;
+    private bool wallRight;
     private Vector3 normalVector = Vector3.up;
+    private bool crouching;
 
     void Awake()
     {
@@ -38,53 +52,130 @@ public class PlayerMovement : MonoBehaviour
 
     void Update()
     {
-        ReadNewInputs();
+        ReadInputs();
+        CheckWalls();
     }
 
     void FixedUpdate()
     {
-        Movement();
+        ApplyMovement();
     }
 
-   void ReadNewInputs()
+    void ReadInputs()
     {
         Keyboard kb = Keyboard.current;
         if (kb == null) return;
 
-        // WASD + Arrow Keys Movement (New Input System)
         xInput = 0f;
         yInput = 0f;
 
-        // Forward (W ya Up Arrow)
         if (kb.wKey.isPressed || kb.upArrowKey.isPressed) yInput += 1f;
-        // Backward (S ya Down Arrow)
         if (kb.sKey.isPressed || kb.downArrowKey.isPressed) yInput -= 1f;
-        // Right (D ya Right Arrow)
         if (kb.dKey.isPressed || kb.rightArrowKey.isPressed) xInput += 1f;
-        // Left (A ya Left Arrow)
         if (kb.aKey.isPressed || kb.leftArrowKey.isPressed) xInput -= 1f;
 
-        // Jump (Space key)
-        jumping = kb.spaceKey.isPressed;
+        if (kb.spaceKey.wasPressedThisFrame)
+        {
+            if (isGrounded && readyToJump)
+            {
+                Jump();
+            }
+            else if (isWallRunning && readyToJump)
+            {
+                ExecuteWallJump();
+            }
+        }
 
-        // Slide / Crouch (Left Ctrl)
         if (kb.leftCtrlKey.wasPressedThisFrame)
-        {
             StartCrouch();
-        }
         else if (kb.leftCtrlKey.wasReleasedThisFrame)
-        {
             StopCrouch();
-        }
 
         crouching = kb.leftCtrlKey.isPressed;
     }
+
+    void CheckWalls()
+    {
+        wallLeft = Physics.Raycast(transform.position, -transform.right, out wallHitLeft, wallCheckDistance, whatIsWall);
+        wallRight = Physics.Raycast(transform.position, transform.right, out wallHitRight, wallCheckDistance, whatIsWall);
+
+        if ((wallLeft || wallRight) && !isGrounded)
+        {
+            isWallRunning = true;
+        }
+        else
+        {
+            isWallRunning = false;
+        }
+    }
+
+    void ExecuteWallJump()
+    {
+        readyToJump = false;
+
+        Vector3 wallNormal = wallRight ? wallHitRight.normal : wallHitLeft.normal;
+        rb.linearVelocity = new Vector3(rb.linearVelocity.x * 0.2f, 0f, rb.linearVelocity.z * 0.2f);
+
+        Vector3 jumpDirection = (wallNormal * wallJumpSideForce) + (Vector3.up * wallJumpUpForce) + (transform.forward * wallJumpForwardForce);
+        rb.AddForce(jumpDirection, ForceMode.VelocityChange);
+
+        Invoke(nameof(ResetJump), jumpCooldown);
+    }
+
+    void ApplyMovement()
+    {
+        if (isWallRunning)
+        {
+            rb.AddForce(Vector3.down * Time.deltaTime * wallRunGravity);
+        }
+        else
+        {
+            rb.AddForce(Vector3.down * Time.deltaTime * normalGravity);
+        }
+
+        Vector2 mag = FindVelRelativeToLook();
+        CounterMovement(xInput, yInput, mag);
+
+        float slopeAngle = Vector3.Angle(Vector3.up, normalVector);
+        bool onSlope = slopeAngle > 5f && slopeAngle < maxSlopeAngle;
+
+        // Dhalan par massive acceleration
+        if (crouching && isGrounded && onSlope)
+        {
+            Vector3 slopeDirection = Vector3.ProjectOnPlane(Vector3.down, normalVector).normalized;
+            rb.AddForce(slopeDirection * slopeSlideForce * Time.deltaTime, ForceMode.Acceleration);
+        }
+
+        float multiplier = isGrounded ? 1f : 0.6f;
+        if (isGrounded && crouching) multiplier = 0.2f;
+
+        rb.AddForce(transform.forward * yInput * moveSpeed * Time.deltaTime * multiplier);
+        rb.AddForce(transform.right * xInput * moveSpeed * Time.deltaTime * multiplier);
+    }
+
+    void Jump()
+    {
+        readyToJump = false;
+        rb.AddForce(Vector2.up * jumpForce * 1.5f);
+        rb.AddForce(normalVector * jumpForce * 0.5f);
+
+        Vector3 vel = rb.linearVelocity;
+        if (rb.linearVelocity.y < 0.5f)
+            rb.linearVelocity = new Vector3(vel.x, 0, vel.z);
+
+        Invoke(nameof(ResetJump), jumpCooldown);
+    }
+
+    void ResetJump()
+    {
+        readyToJump = true;
+    }
+
     void StartCrouch()
     {
         transform.localScale = crouchScale;
         transform.position = new Vector3(transform.position.x, transform.position.y - 0.5f, transform.position.z);
 
-        // Slide boost forward kick
         if (rb.linearVelocity.magnitude > 0.5f && isGrounded)
         {
             rb.AddForce(transform.forward * slideForce);
@@ -97,79 +188,27 @@ public class PlayerMovement : MonoBehaviour
         transform.position = new Vector3(transform.position.x, transform.position.y + 0.5f, transform.position.z);
     }
 
-    void Movement()
-    {
-        // Karlson downward snappy gravity
-        rb.AddForce(Vector3.down * Time.deltaTime * extraGravity);
-
-        Vector2 mag = FindVelRelativeToLook();
-        CounterMovement(xInput, yInput, mag);
-
-        if (readyToJump && jumping && isGrounded)
-        {
-            Jump();
-        }
-
-        float multiplier = 1f;
-        float multiplierV = 1f;
-
-        if (!isGrounded)
-        {
-            multiplier = 0.5f;
-            multiplierV = 0.5f;
-        }
-        if (isGrounded && crouching)
-        {
-            multiplierV = 0f;
-            multiplier = 0.2f;
-        }
-
-        rb.AddForce(transform.forward * yInput * moveSpeed * Time.deltaTime * multiplier * multiplierV);
-        rb.AddForce(transform.right * xInput * moveSpeed * Time.deltaTime * multiplier);
-    }
-
-    void Jump()
-    {
-        if (isGrounded && readyToJump)
-        {
-            readyToJump = false;
-            rb.AddForce(Vector2.up * jumpForce * 1.5f);
-            rb.AddForce(normalVector * jumpForce * 0.5f);
-
-            Vector3 vel = rb.linearVelocity;
-            if (rb.linearVelocity.y < 0.5f)
-                rb.linearVelocity = new Vector3(vel.x, 0, vel.z);
-            else if (rb.linearVelocity.y > 0)
-                rb.linearVelocity = new Vector3(vel.x, vel.y / 2, vel.z);
-
-            Invoke(nameof(ResetJump), jumpCooldown);
-        }
-    }
-
-    void ResetJump()
-    {
-        readyToJump = true;
-    }
-
     void CounterMovement(float x, float y, Vector2 mag)
     {
-        if (!isGrounded || jumping) return;
+        if (!isGrounded || isWallRunning) return;
 
+        // Slide ke doran friction kam rakhna aur speed cap na lagana
         if (crouching)
         {
             rb.AddForce(moveSpeed * Time.deltaTime * -rb.linearVelocity.normalized * slideCounterMovement);
             return;
         }
 
-        if (Mathf.Abs(mag.x) > threshold && Mathf.Abs(x) < 0.05f || (mag.x < -threshold && x > 0) || (mag.x > threshold && x < 0))
+        if (Mathf.Abs(mag.x) > 0.01f && Mathf.Abs(x) < 0.05f || (mag.x < -0.01f && x > 0) || (mag.x > 0.01f && x < 0))
         {
             rb.AddForce(moveSpeed * transform.right * Time.deltaTime * -mag.x * counterMovement);
         }
-        if (Mathf.Abs(mag.y) > threshold && Mathf.Abs(y) < 0.05f || (mag.y < -threshold && y > 0) || (mag.y > threshold && y < 0))
+        if (Mathf.Abs(mag.y) > 0.01f && Mathf.Abs(y) < 0.05f || (mag.y < -0.01f && y > 0) || (mag.y > 0.01f && y < 0))
         {
             rb.AddForce(moveSpeed * transform.forward * Time.deltaTime * -mag.y * counterMovement);
         }
 
+        // Sirf aam chalte waqt maxSpeed limit active hogi
         if (Mathf.Sqrt(Mathf.Pow(rb.linearVelocity.x, 2) + Mathf.Pow(rb.linearVelocity.z, 2)) > maxSpeed)
         {
             float fallspeed = rb.linearVelocity.y;
@@ -201,7 +240,7 @@ public class PlayerMovement : MonoBehaviour
         for (int i = 0; i < other.contactCount; i++)
         {
             Vector3 normal = other.contacts[i].normal;
-            if (IsFloor(normal))
+            if (Vector3.Angle(Vector3.up, normal) < maxSlopeAngle)
             {
                 isGrounded = true;
                 normalVector = normal;
@@ -212,11 +251,5 @@ public class PlayerMovement : MonoBehaviour
     void OnCollisionExit(Collision other)
     {
         isGrounded = false;
-    }
-
-    bool IsFloor(Vector3 v)
-    {
-        float angle = Vector3.Angle(Vector3.up, v);
-        return angle < maxSlopeAngle;
     }
 }
