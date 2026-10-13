@@ -1,35 +1,77 @@
 using UnityEngine;
 using UnityEngine.InputSystem;
 
+[RequireComponent(typeof(LineRenderer))]
 public class GrapplingGun : MonoBehaviour
 {
-    private LineRenderer lr;
-    private Vector3 grapplePoint;
-    public LayerMask whatIsGrappleable;
+    [Header("Grapple Settings")]
+    public float maxDistance = 50f;
+    public LayerMask whatIsGrappleable;   
+    public Transform muzzlePoint;
     public Transform cameraTransform;
-    public Transform player;
-    public float maxDistance = 100f;
-    private SpringJoint joint;
+    public Transform playerTransform;
 
-    [Header("Dani Spring Settings")]
-    public float spring = 4.5f;
-    public float damper = 7f;
+    [Header("Joint Physics (Swing Feel)")]
+    public float spring = 4.5f;          
+    public float damper = 7f;            
     public float massScale = 4.5f;
 
-    [Header("Procedural Rope Settings")]
-    public int quality = 400;
-    public float damperRope = 14f;
-    public float strengthRope = 800f;
-    public float waveHeight = 1.2f;
-    public float waveCount = 2.5f;
+    [Header("Visuals & Audio")]
+    public LineRenderer lineRenderer;
+    public AudioSource audioSource;
+    public AudioClip grappleShootSound;
 
-    private Vector3 currentGrapplePosition;
-    private float springPos = 0f;
-    private float springVelocity = 0f;
+    private Vector3 grapplePoint;
+    private SpringJoint joint;
+    private Rigidbody playerRb;
 
-    void Awake()
+    void Start()
     {
-        lr = GetComponent<LineRenderer>();
+        // 1. LineRenderer Setup
+        if (lineRenderer == null) 
+            lineRenderer = GetComponent<LineRenderer>();
+
+        // Line ko flat ribbon ke bajaye round/smooth curves dena
+        lineRenderer.numCapVertices = 8;      // Dono siron ko gol karega
+        lineRenderer.numCornerVertices = 8;   // Turns ko round banayega
+        lineRenderer.positionCount = 0;
+
+        // Missing/Pink material ka auto-fix agar koi assign na ho
+        if (lineRenderer.sharedMaterial == null || lineRenderer.sharedMaterial.name.Contains("Default"))
+        {
+            Shader unlitShader = Shader.Find("Universal Render Pipeline/Unlit") ?? Shader.Find("Sprites/Default");
+            if (unlitShader != null)
+            {
+                Material roundRopeMat = new Material(unlitShader);
+                roundRopeMat.color = Color.cyan; // Pasandeeda color yahan set kar sakte hain
+                lineRenderer.material = roundRopeMat;
+            }
+        }
+
+        // 2. AudioSource Setup
+        if (audioSource == null) 
+            audioSource = GetComponent<AudioSource>();
+
+        if (audioSource != null)
+            audioSource.playOnAwake = false;
+
+        // 3. Muzzle Point Fail-Safe (Kabhi error nahi aayega)
+        if (muzzlePoint == null)
+        {
+            Transform found = transform.Find("muzzlepoint");
+            if (found == null) found = transform.Find("MuzzlePoint");
+            muzzlePoint = found != null ? found : transform;
+        }
+
+        // 4. Player References Setup
+        if (cameraTransform == null && Camera.main != null)
+            cameraTransform = Camera.main.transform;
+
+        if (playerTransform == null && cameraTransform != null)
+            playerTransform = cameraTransform.root;
+
+        if (playerTransform != null)
+            playerRb = playerTransform.GetComponent<Rigidbody>();
     }
 
     void Update()
@@ -37,10 +79,12 @@ public class GrapplingGun : MonoBehaviour
         Mouse mouse = Mouse.current;
         if (mouse == null) return;
 
+        // Right Mouse Button daba kar rakhne se swing shuru
         if (mouse.rightButton.wasPressedThisFrame)
         {
             StartGrapple();
         }
+        // Right Mouse Button chhodte hi rassi release
         else if (mouse.rightButton.wasReleasedThisFrame)
         {
             StopGrapple();
@@ -55,15 +99,22 @@ public class GrapplingGun : MonoBehaviour
     void StartGrapple()
     {
         RaycastHit hit;
-        if (Physics.Raycast(cameraTransform.position, cameraTransform.forward, out hit, maxDistance, whatIsGrappleable))
+        // Samne aane wali har solid surface par grapple lagega
+        if (Physics.Raycast(cameraTransform.position, cameraTransform.forward, out hit, maxDistance))
         {
+            // Khud apne player body par hook na lage
+            if (hit.transform.root == playerTransform) return;
+
             grapplePoint = hit.point;
-            joint = player.gameObject.AddComponent<SpringJoint>();
+
+            // Player par SpringJoint lagana swing physics ke liye
+            joint = playerTransform.gameObject.AddComponent<SpringJoint>();
             joint.autoConfigureConnectedAnchor = false;
             joint.connectedAnchor = grapplePoint;
 
-            float distanceFromPoint = Vector3.Distance(player.position, grapplePoint);
+            float distanceFromPoint = Vector3.Distance(playerTransform.position, grapplePoint);
 
+            // Rassi ke stretch constraints
             joint.maxDistance = distanceFromPoint * 0.8f;
             joint.minDistance = distanceFromPoint * 0.25f;
 
@@ -71,16 +122,16 @@ public class GrapplingGun : MonoBehaviour
             joint.damper = damper;
             joint.massScale = massScale;
 
-            lr.positionCount = quality + 1;
-            currentGrapplePosition = cameraTransform.position;
-            springPos = 0f;
-            springVelocity = 0f;
+            lineRenderer.positionCount = 2;
+
+            if (audioSource != null && grappleShootSound != null)
+                audioSource.PlayOneShot(grappleShootSound);
         }
     }
 
     void StopGrapple()
     {
-        lr.positionCount = 0;
+        lineRenderer.positionCount = 0;
         if (joint != null)
         {
             Destroy(joint);
@@ -89,31 +140,10 @@ public class GrapplingGun : MonoBehaviour
 
     void DrawRope()
     {
-        if (!joint)
-        {
-            currentGrapplePosition = cameraTransform.position;
-            return;
-        }
+        // Agar grapple active na ho toh rassi draw na ho
+        if (joint == null) return;
 
-        float force = -strengthRope * (springPos - 1f) - damperRope * springVelocity;
-        springVelocity += force * Time.deltaTime;
-        springPos += springVelocity * Time.deltaTime;
-
-        currentGrapplePosition = Vector3.Lerp(currentGrapplePosition, grapplePoint, Time.deltaTime * 12f);
-
-        Vector3 up = Quaternion.LookRotation((grapplePoint - cameraTransform.position).normalized) * Vector3.up;
-
-        for (int i = 0; i <= quality; i++)
-        {
-            float delta = i / (float)quality;
-            Vector3 offset = up * waveHeight * Mathf.Sin(delta * waveCount * Mathf.PI) * (1f - springPos);
-            Vector3 target = Vector3.Lerp(cameraTransform.position, currentGrapplePosition, delta) + offset;
-            lr.SetPosition(i, target);
-        }
-    }
-
-    public bool IsGrappling()
-    {
-        return joint != null;
+        lineRenderer.SetPosition(0, muzzlePoint.position);
+        lineRenderer.SetPosition(1, grapplePoint);
     }
 }
